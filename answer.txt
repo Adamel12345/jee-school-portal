@@ -1,0 +1,197 @@
+=====================================================================
+answer.txt — Lab 2 (Advanced Web Development JEE)
+=====================================================================
+
+STEP 6 — Diagnosis questions (before adding traces)
+
+Q1. Where is the account (saad@uir.ac.ma) stored right now?
+    → It is stored in the members map of the MemberDaoImpl instance
+      #876018865, which belongs to RegisterServlet. But this instance
+      is NOT the one LoginServlet uses.
+
+Q2. How many MemberDaoImpl objects exist in Tomcat at this moment?
+    → Two:
+      - #876018865 (created for RegisterServlet)
+      - #924060892 (created for LoginServlet)
+      Each servlet has its own DAO, and therefore its own members map.
+
+---------------------------------------------------------------------
+STEP 6 — Table 2 : Trace BEFORE the fix
+---------------------------------------------------------------------
+
+#  | Action                              | Servlet  | DAO #      | Map size
+---|-------------------------------------|----------|------------|----------
+1  | Register saad@uir.ac.ma (student)   | Register | 876018865  | 1
+2  | Sign in as saad@uir.ac.ma           | Login    | 924060892  | 0
+3  | Register ayoub@uir.ac.ma (student)  | Register | 876018865  | 2
+4  | Sign in as ayoub@uir.ac.ma          | Login    | 924060892  | 0
+5  | Register saad@uir.ac.ma again       | Register | 876018865  | 2
+
+Observation : the two servlets use TWO different DAO instances.
+Row 5 succeeds (RegisterServlet knows Saad, because it wrote into its
+own map), but rows 2 and 4 fail (LoginServlet searches in an empty map).
+
+---------------------------------------------------------------------
+Q3. How many "created" lines did you get, and at which action did each
+    appear? Was any DAO created when Tomcat started?
+---------------------------------------------------------------------
+
+→ Two "created" lines:
+   - The first when I submitted the registration form (action 1).
+   - The second when I submitted the login form (action 2).
+
+   NO DAO was created when Tomcat started. Tomcat creates servlet
+   objects LAZILY: the first time a servlet is requested, not at
+   startup. This is the servlet life cycle.
+
+---------------------------------------------------------------------
+Q4. Row 5 (Register saad@uir.ac.ma again): RegisterServlet knows
+    Ayoub, LoginServlet does not. How can both be true at the same time?
+---------------------------------------------------------------------
+
+→ Because each servlet has its OWN MemberDaoImpl, and each DAO has its
+  own members map:
+  - RegisterServlet's DAO (#876018865) has a map that contains Saad.
+    So when we register Saad again, the "already registered" check
+    succeeds.
+  - LoginServlet's DAO (#924060892) has a different, empty map.
+    So when we try to sign in as Saad, findByEmail returns null.
+
+  Nothing is wrong inside either class. The bug is in HOW the objects
+  are connected: two "databases" exist, and each servlet talks to a
+  different one.
+
+  STEP 6 — Bonus experiment (DAO inside doPost)
+
+  PREDICTION (before running):
+     If I create the DAO inside doPost, every request creates a NEW DAO.
+     So registering 3 accounts creates 3 different DAOs.
+     Each DAO has its own empty map, so:
+     - findByEmail will ALWAYS return null (the map is brand new).
+     - The "already registered" check can NEVER succeed.
+     - The DAOs from previous requests become unreachable and are
+       garbage-collected by the JVM.
+
+=====================================================================
+
+---------------------------------------------------------------------
+STEP 7 — Table 3 : Trace AFTER the fix (singleton)
+---------------------------------------------------------------------
+
+#  | Action                              | Servlet  | DAO #       | Map size
+---|-------------------------------------|----------|-------------|----------
+1  | Register ayoub@uir.ac.ma (student)  | Register | XXXXXXXXX   | 1
+2  | Sign in as ayoub@uir.ac.ma          | Login    | XXXXXXXXX   | 1     ✓
+3  | Register saad@uir.ac.ma (teacher)   | Register | XXXXXXXXX   | 2
+4  | Sign in as saad@uir.ac.ma           | Login    | XXXXXXXXX   | 2     ✓
+5  | Register ayoub@uir.ac.ma again      | Register | XXXXXXXXX   | 2     ✓
+
+⚠️ Remplace XXXXXXXXX par le VRAI numéro que tu vois dans le log.
+
+Observation :
+   Only ONE DAO number appears. Every servlet now calls
+   MemberDaoImpl.getInstance() and gets the same shared instance.
+   Sign-in works (rows 2, 4) and duplicate registration is refused
+   (row 5). Figure 4 in the lab shows the new picture.
+
+---------------------------------------------------------------------
+Why is the instance created in the field declaration, and not inside
+getInstance() with `if (instance == null) instance = new ...`?
+---------------------------------------------------------------------
+
+→ Because two requests calling getInstance() at the same moment could
+  both see null and create two DAOs (a race condition — same problem
+  as Lab 1's counter). A static final field is initialised by the JVM
+  exactly once, whatever the number of threads.
+
+
+  ---------------------------------------------------------------------
+  STEP 8 — Question : both windows use the same DAO object, yet each
+  shows its own dashboard. Which object is different for each window,
+  and who creates it?
+  ---------------------------------------------------------------------
+
+  → The HttpSession object is different for each browser window.
+    Tomcat creates a new HttpSession on the first request from a
+    browser (identified by the JSESSIONID cookie). That session holds
+    the "member" attribute pointing to the signed-in SchoolMember.
+
+    When you sign in as Ayoub in window 1 and Saad in window 2, each
+    window gets its own session, holding a different SchoolMember.
+    The DAO is shared (one instance), but the session is per-client.
+
+
+    =====================================================================
+    STEP 9 — Table 4 : Deliberate breakages
+    =====================================================================
+
+    FAULT A — Renamed @WebServlet("/dashboard") to "/Dashboard"
+      Change     : Changed the annotation value in DashboardServlet.
+      Symptom    : HTTP 404 Not Found on /awd-tp2/dashboard (but /Dashboard
+                   works).
+      Log        : No error, deployment succeeds.
+      Cause      : URL paths are case-sensitive in Tomcat. The servlet is
+                   now mapped to /Dashboard, so /dashboard no longer matches.
+      Undone     : Yes.
+
+    ---------------------------------------------------------------------
+
+    FAULT B — Replaced request.getSession(false) with request.getSession()
+      Change     : In DashboardServlet, getSession(false) -> getSession().
+      Symptom    : Accessing /dashboard without being signed in no longer
+                   redirects to login. Instead, a new empty session is
+                   created silently and the dashboard renders blank.
+      Log        : No error.
+      Cause      : getSession() with no argument ALWAYS creates a session
+                   if none exists. getSession(false) returns null instead.
+                   The "if (member == null) redirect" check becomes dead
+                   code.
+      Undone     : Yes.
+
+    ---------------------------------------------------------------------
+
+    FAULT C — Removed response.sendRedirect() in LoginServlet
+      Change     : Replaced the redirect with a direct HTML page.
+      Symptom    : After successful sign-in, the URL stays /login instead
+                   of switching to /dashboard. A page refresh would
+                   resubmit the POST form.
+      Log        : No error.
+      Cause      : sendRedirect() sends a 302 + the target URL, telling
+                   the browser to make a NEW GET request to /dashboard.
+                   Writing HTML sends a 200 OK for the SAME request, so
+                   the URL does not change.
+      Undone     : Yes.
+
+    ---------------------------------------------------------------------
+
+    FAULT D — Removed the instanceof Student check in EnrollServlet
+      Change     : Deleted the "if (!(member instanceof Student)) { 403 }"
+                   block.
+      Symptom    : A Teacher trying to enroll gets HTTP 500 (browser).
+                   A Student still works fine.
+      Log        : SEVERE — ClassCastException: Teacher cannot be cast to
+                   Student, at ma.uir.awd.web.EnrollServlet.doPost(...)
+      Cause      : Without the instanceof check, the code casts directly to
+                   Student. If the member is a Teacher, the cast throws
+                   ClassCastException, which Tomcat turns into a 500.
+                   Security bug: the check ensures only Students can
+                   enroll.
+      Undone     : Yes.
+
+      =====================================================================
+      STEP 10 — Question : Why is Delete a form with method="post", and not
+                a plain link admin/delete?email=...?
+      =====================================================================
+
+      → Because a GET request can be triggered by simply loading an <img>
+        tag, a link in an email, or a bookmark — and it is IDEMPOTENT by
+        convention (should not change server state). A destructive action
+        like DELETE must use POST, so:
+        - the browser cannot trigger it accidentally (e.g. by prefetching
+          a link);
+        - the action is not cached by proxies;
+        - the "are you sure?" semantic of POST is preserved.
+
+        Using GET for delete would allow a malicious page to embed
+        <img src=".../admin/delete?email=..."> and silently delete any
+        member as soon as the admin views the page (CSRF).

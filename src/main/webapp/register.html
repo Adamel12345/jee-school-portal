@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Create an account — School Portal</title>
+    <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+<div class="container">
+    <h1>Create an account</h1>
+
+    <form action="register" method="post">
+        <label for="fullName">Full name</label>
+        <input type="text" id="fullName" name="fullName" required>
+
+        <label for="email">Email</label>
+        <input type="email" id="email" name="email" required>
+
+        <label for="password">Password</label>
+        <input type="password" id="password" name="password" required>
+
+        <label for="role">I am a</label>
+        <select id="role" name="role">
+            <option value="student">Student</option>
+            <option value="teacher">Teacher</option>
+            <option value="parent">Parent</option>
+        </select>
+
+        <label for="childEmail">Your child's email (parents only)</label>
+        <input type="email" id="childEmail" name="childEmail">
+
+        <button type="submit" class="btn btn-primary">Create account</button>
+    </form>
+
+    <p><a href="index.html">← Back to home</a></p>
+</div>
+</body>
+</html>
